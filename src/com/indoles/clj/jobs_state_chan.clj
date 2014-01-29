@@ -29,7 +29,7 @@
         (async/go ((:fn i))
                   (send-complete-execution (:id i) (:ch e)))
         (-> e (update-in [:executing] conj i)
-            (update-in [:queued] #(drop 1 %1))))
+            (update-in [:queued] #(vec (drop 1 %1)))))
       e)
     e))
 
@@ -42,14 +42,28 @@
         new-executing (filter #(not (= jid (:id %1))) executing)]
     (try-to-execute (assoc-in e [:executing] (vec new-executing)))))
 
+(defn- try-dequeue-job [jid e]
+  (let [queued (:queued e)
+        new-queued (filter #(not (= (:id %1) jid)) queued)]
+    (assoc-in e [:queued] (vec new-queued))))
+
 (defn send-queue-job [f ch]
   (async/go (async/>! ch (fn [e] (queue-job (make-job f e) e)))))
 
 (defn send-complete-execution [id ch]
   (async/go (async/>! ch (fn [e] (complete-execution id e)))))
 
+(defn send-try-dequeue-job [jid ch]
+  (async/go (async/>! ch (fn [e] (try-dequeue-job jid e)))))
+
 (defn- sleep-job [s n]
   (fn [] (Thread/sleep s) (println n)))
 
 (defn- su []
-  (def ch (init)))
+  (def ch (init))
+  (dotimes [i 5]
+    (send-queue-job (sleep-job 5000 i) ch)
+    (Thread/sleep 500))
+  (send-try-dequeue-job 5 ch)
+  (state ch))
+

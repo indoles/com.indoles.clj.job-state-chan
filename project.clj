@@ -1,4 +1,4 @@
-(defproject com.indoles.clj/jobs-state-chan "0.1.0"
+(defproject com.indoles.clj/jobs-state-chan "0.1.1"
   :description "core.async channel based job execution queue"
   :url "http://github.com/indoles/com.indoles.clj.job-state-chan.git"
   :license {:name "Eclipse Public License"
