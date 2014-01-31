@@ -2,10 +2,19 @@
   (:require [com.indoles.clj.state-chan :as sc]
             [clojure.core.async :as async]))
 
-(defn init []
-  (let [ch (sc/init {:executing [] :queued []})]
-    (async/go (async/>! ch #(assoc %1 :ch ch)))
-    ch))
+;; return vector of jobs to execute, nil if none should be started
+(defn one-at-a-time [executing queued]
+  (when (and (empty? executing) (first queued))
+    [(first queued)]))
+
+(defn init
+  ([startable-fn] (let [ch (sc/init {:executing [] :queued []})]
+                    (async/go (async/>!
+                               ch #(assoc %1 :ch ch :startable-fn startable-fn)))
+                                        ; do a sync
+                    (sc/state ch)
+                    ch))
+  ([] (init one-at-a-time)))
 
 (defn state [ch]
   (sc/state ch))
@@ -22,15 +31,31 @@
 
 (declare send-complete-execution)
 
+(defn- execute-job [job e]
+  (async/go ((:fn job))
+            (send-complete-execution (:id job) (:ch e))
+            (-> e (update-in [:executing] conj job)
+                (update-in [:queued] (vec (filter #(not (= (:id job) ))))))))
+
 (defn- try-to-execute [e]
-  (if (empty? (:executing e))
-    (if-let [i (first (:queued e))]
-      (do
-        (async/go ((:fn i))
-                  (send-complete-execution (:id i) (:ch e)))
-        (-> e (update-in [:executing] conj i)
-            (update-in [:queued] #(vec (drop 1 %1)))))
-      e)
+  (if-let [startables ( (:startable-fn e) (:executing e) (:queued e) )]
+    (loop [i startables
+           new-e e]
+      (if-let [start-me (first i)]
+        (let [executing (:executing new-e)
+              queued (:queued new-e)
+              new-executing (conj executing start-me)
+              new-queued (vec (filter #(not (= (:id start-me)
+                                               (:id %1)))
+                                      queued))]
+          (async/go ((:fn start-me))
+                    (send-complete-execution (:id start-me) (:ch e)))
+          (recur (vec (rest startables))
+                 (-> new-e (assoc-in [:executing] new-executing)
+                     (assoc-in [:queued] new-queued))))
+        ;; started all we need to start
+        new-e))
+    ;; this means no new jobs were started
     e))
 
 (defn- queue-job [job e]
@@ -45,7 +70,7 @@
 (defn- try-dequeue-job [jid e]
   (let [queued (:queued e)
         new-queued (filter #(not (= (:id %1) jid)) queued)]
-    (assoc-in e [:queued] (vec new-queued))))
+    (try-to-execute (assoc-in e [:queued] (vec new-queued)))))
 
 (defn send-queue-job [f ch]
   (async/go (async/>! ch (fn [e] (queue-job (make-job f e) e)))))
@@ -55,15 +80,3 @@
 
 (defn send-try-dequeue-job [jid ch]
   (async/go (async/>! ch (fn [e] (try-dequeue-job jid e)))))
-
-(defn- sleep-job [s n]
-  (fn [] (Thread/sleep s) (println n)))
-
-(defn- su []
-  (def ch (init))
-  (dotimes [i 5]
-    (send-queue-job (sleep-job 5000 i) ch)
-    (Thread/sleep 500))
-  (send-try-dequeue-job 5 ch)
-  (state ch))
-
